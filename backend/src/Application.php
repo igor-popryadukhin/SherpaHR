@@ -210,7 +210,7 @@ final class Application
 
     private function helpMatch(string $body): ?array
     {
-        $pattern = '/(?:нужн\p{L}*\s+(?:ваша\s+)?помощ|прош\p{L}*\s+помощ|помог(?:и|ите)\b|нужн\p{L}*\s+решени|нужен\s+ответ|требует\p{L}*\s+помощ|подскаж(?:и|ите)\b)/iu';
+        $pattern = '/(?<![\p{L}])(?:нужн\p{L}*\s+(?:[\p{L}]+\s+){0,2}помощ|прош\p{L}*\s+помощ|помог(?:и|ите)\b|нужн\p{L}*\s+(?:ваше\s+)?решени|нужен\s+(?:ваш\s+)?ответ|требует\p{L}*\s+помощ|подскаж(?:и|ите)\b)/iu';
         if (!preg_match_all($pattern, $body, $matches, PREG_OFFSET_CAPTURE)) {
             return null;
         }

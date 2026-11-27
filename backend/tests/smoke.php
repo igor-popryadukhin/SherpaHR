@@ -146,6 +146,10 @@ try {
     $tieLate = createTask(1, ['title' => 'Attention blocked later', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $later]);
     $longNegated = createTask(1, ['title' => 'Attention long negated', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
     $unassigned = createTask(1, ['title' => 'Attention unassigned', 'status' => 'blocked', 'assignee_id' => null, 'due_at' => $future]);
+    $urgent = createTask(1, ['title' => 'Attention urgent help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $decision = createTask(1, ['title' => 'Attention decision help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $answer = createTask(1, ['title' => 'Attention answer help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $unneeded = createTask(1, ['title' => 'Attention unneeded help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
 
     [$status, $helpComment] = request('POST', '/api/tasks/' . $help['id'] . '/comments', ['body' => 'Нужна помощь с проверкой документов.'], 2);
     check($status === 201 && $helpComment['data']['author'] === 'Борис · разработчик', 'help comment created');
@@ -154,6 +158,10 @@ try {
     request('POST', '/api/tasks/' . $helpThenNeutral['id'] . '/comments', ['body' => 'Пока жду ответа, работаю над другим пунктом.'], 3);
     request('POST', '/api/tasks/' . $negated['id'] . '/comments', ['body' => 'Не нужна помощь, разобрались сами.'], 2);
     request('POST', '/api/tasks/' . $longNegated['id'] . '/comments', ['body' => 'Спасибо, разобрались, не нужна помощь.'], 2);
+    request('POST', '/api/tasks/' . $urgent['id'] . '/comments', ['body' => 'Нужна срочная помощь с доступом.'], 2);
+    request('POST', '/api/tasks/' . $decision['id'] . '/comments', ['body' => 'Нужно ваше решение по формату.'], 2);
+    request('POST', '/api/tasks/' . $answer['id'] . '/comments', ['body' => 'Нужен ваш ответ до вечера.'], 2);
+    request('POST', '/api/tasks/' . $unneeded['id'] . '/comments', ['body' => 'Это ненужная помощь, справимся сами.'], 2);
     request('POST', '/api/tasks/' . $ownHelp['id'] . '/comments', ['body' => 'Нужна помощь.'], 1);
     request('POST', '/api/tasks/' . $three['id'] . '/comments', ['body' => 'Нужна помощь, выберите вариант.'], 2);
     $oldStmt = $testDb->prepare('INSERT INTO comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)');
@@ -170,6 +178,10 @@ try {
         'help quote carries author and UTC time');
     check(!isset($attention[$negated['id']]), 'negated help is not a reason');
     check(!isset($attention[$longNegated['id']]), 'long negated help is not a reason');
+    foreach ([$urgent, $decision, $answer] as $taskWithHelp) {
+        check(isset($attention[$taskWithHelp['id']]) && in_array('help_request', $attention[$taskWithHelp['id']]['reasons'], true), 'new help wording is a reason: ' . $taskWithHelp['title']);
+    }
+    check(!isset($attention[$unneeded['id']]), 'unneeded help is not a reason');
     check(isset($attention[$helpThenNeutral['id']]) && $attention[$helpThenNeutral['id']]['help_quote']['comment_id'] === $helpThenNeutralComment['data']['id'], 'newer neutral comment does not replace the help request');
     check(!isset($attention[$ownHelp['id']]), 'own help request is not a reason');
     check(!isset($attention[$oldHelp['id']]), 'help older than seven days is not a reason');
