@@ -27,6 +27,7 @@
     @if (notice()) { <div role="status" class="alert success">{{notice()}}</div> }
     @if (view() === 'attention') {
       <div class="breadcrumb">Контроль <span>/</span> Требует внимания</div>
+      @if (attentionError()) { <div role="alert" class="alert error">{{attentionError()}}</div> }
       <div class="page-heading">
         <div>
           <h1>Требует внимания</h1>

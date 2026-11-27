@@ -29,6 +29,7 @@ export class AppComponent {
   view = signal<'project' | 'attention'>('project');
   attention = signal<AttentionItem[]>([]);
   attentionLoading = signal(false);
+  attentionError = signal('');
   cardProject = computed<Project | null>(() => {
     const detail = this.detail();
     if (detail) return this.projects().find(p => p.id === detail.project_id) ?? null;
@@ -49,21 +50,36 @@ export class AppComponent {
     const attentionGeneration = ++this.attentionGeneration;
     this.loading.set(true);
     this.error.set('');
+    this.attentionError.set('');
     this.closeDetail();
     this.attention.set([]);
+    this.attentionLoading.set(this.view() === 'attention');
+    // The overview must not block project navigation: a failed /attention request
+    // stays independent from the project list.
+    const attentionRequest = this.api.request<AttentionItem[]>('/attention')
+      .then(attention => {
+        if (attentionGeneration !== this.attentionGeneration) return;
+        this.attention.set(attention);
+        this.attentionLoading.set(false);
+      })
+      .catch(error => {
+        if (attentionGeneration !== this.attentionGeneration) return;
+        this.attention.set([]);
+        this.attentionLoading.set(false);
+        this.attentionError.set(error instanceof Error ? error.message : 'Не удалось загрузить обзор');
+      });
     try {
-      const [context, projects, attention] = await Promise.all([
+      const [context, projects] = await Promise.all([
         this.api.request<Context>('/context'),
         this.api.request<Project[]>('/projects'),
-        this.api.request<AttentionItem[]>('/attention'),
       ]);
       if (generation !== this.generation) return;
-      if (attentionGeneration === this.attentionGeneration) this.attention.set(attention);
       this.context.set(context);
       this.projects.set(projects);
       if (this.view() === 'attention') {
         this.project.set(null);
         this.tasks.set([]);
+        await attentionRequest;
         return;
       }
       const project = projects.find(p => p.id === this.project()?.id) ?? projects[0];
@@ -121,13 +137,15 @@ export class AppComponent {
   async refreshAttention(): Promise<void> {
     const generation = ++this.attentionGeneration;
     this.attentionLoading.set(true);
-    this.error.set('');
+    this.attentionError.set('');
     try {
       const attention = await this.api.request<AttentionItem[]>('/attention');
       if (generation !== this.attentionGeneration) return;
       this.attention.set(attention);
     } catch (error) {
-      if (generation === this.attentionGeneration) this.fail(error);
+      if (generation !== this.attentionGeneration) return;
+      this.attention.set([]);
+      this.attentionError.set(error instanceof Error ? error.message : 'Не удалось загрузить обзор');
     } finally {
       if (generation === this.attentionGeneration) this.attentionLoading.set(false);
     }
@@ -187,10 +205,13 @@ export class AppComponent {
       };
       const task = await this.api.request<Task>(existing ? `/tasks/${existing.id}` : `/projects/${project.id}/tasks`, existing ? 'PATCH' : 'POST', data);
       if (userId !== this.api.userId) return;
+      // Refresh the overview for every successful save, independently of the drawer:
+      // closing the card or switching projects must not leave a stale attention list.
+      await this.refreshAttention();
       if (!existing && this.project()?.id !== project.id) return;
-      if (existing && this.detail()?.id !== existing.id) return;
       if (!existing) this.projects.update(list => list.map(p => p.id === project.id ? { ...p, task_count: p.task_count + 1 } : p));
       this.tasks.update(list => existing ? list.map(t => t.id === task.id ? task : t) : [...list, task]);
+      if (existing && this.detail()?.id !== existing.id) return;
       if (generation === this.detailGeneration) {
         // Saving fields must not erase a comment the user has not sent yet.
         this.detail.set({ ...task, comments: existing?.comments ?? [] });
@@ -201,7 +222,6 @@ export class AppComponent {
         };
         this.notice.set('Задача сохранена');
       }
-      if (existing) await this.refreshAttention();
     } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
     finally { this.saving.set(false); }
   }
