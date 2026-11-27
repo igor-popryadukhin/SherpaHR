@@ -69,6 +69,8 @@ try {
     [$status, $response] = request('GET', '/api/projects');
     check($status === 200 && array_column($response['data'], 'id') === [1, 2, 3, 4], 'Anna sees only her projects');
     check($response['data'][3]['archived'] === true, 'archive marker is boolean');
+    [$status, $response] = request('GET', '/api/projects/2/tasks');
+    check($status === 200 && array_column($response['data'], 'id') === [5, 6, 7], 'project tasks include unassigned task');
     [$status, $response] = request('GET', '/api/projects', null, 2);
     check(array_column($response['data'], 'id') === [1, 2, 4], 'Boris has different membership');
     [$status, $response] = request('GET', '/api/projects', null, 3);
