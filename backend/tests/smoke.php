@@ -113,6 +113,75 @@ try {
     check($response['data']['comments'][0]['body'] === '<script>window.pwned=1</script>', 'comment content retained as plain data');
     [$status, $response] = request('GET', '/api/projects/1/tasks');
     check(count($response['data']) === 6, 'initialization does not duplicate or reset data');
+
+    // Attention overview: fixtures use the server clock so the seven-day window is deterministic.
+    $testDb = new PDO('sqlite:' . $environment['DB_PATH'], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $testDb->exec('PRAGMA busy_timeout = 5000');
+    $testDb->exec("UPDATE comments SET created_at = '2026-01-01T00:00:00Z'");
+    $now = time();
+    $past = gmdate('Y-m-d\TH:i:s\Z', $now - 2 * 86400);
+    $future = gmdate('Y-m-d\TH:i:s\Z', $now + 3 * 86400);
+    $later = gmdate('Y-m-d\TH:i:s\Z', $now + 5 * 86400);
+
+    function createTask(int $project, array $fields): array
+    {
+        [$status, $response] = request('POST', "/api/projects/$project/tasks", $fields);
+        if ($status !== 201) {
+            throw new RuntimeException('create task failed: ' . json_encode($response));
+        }
+        return $response['data'];
+    }
+
+    $blocked = createTask(1, ['title' => 'Attention blocked', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $future]);
+    $overdue = createTask(1, ['title' => 'Attention overdue', 'status' => 'in_progress', 'assignee_id' => 3, 'due_at' => $past]);
+    $help = createTask(1, ['title' => 'Attention help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => $future]);
+    $done = createTask(1, ['title' => 'Attention done', 'status' => 'done', 'assignee_id' => 2, 'due_at' => $past]);
+    $oldHelp = createTask(1, ['title' => 'Attention old help', 'status' => 'open', 'assignee_id' => null, 'due_at' => null]);
+    $helpThenNeutral = createTask(1, ['title' => 'Attention help then neutral', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $negated = createTask(1, ['title' => 'Attention negated', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $ownHelp = createTask(1, ['title' => 'Attention own help', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $three = createTask(1, ['title' => 'Attention three reasons', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $past]);
+    $tieSoon = createTask(1, ['title' => 'Attention blocked sooner', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $future]);
+    $tieLate = createTask(1, ['title' => 'Attention blocked later', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $later]);
+
+    [$status, $helpComment] = request('POST', '/api/tasks/' . $help['id'] . '/comments', ['body' => 'Нужна помощь с проверкой документов.'], 2);
+    check($status === 201 && $helpComment['data']['author'] === 'Борис · разработчик', 'help comment created');
+    [$status, $helpThenNeutralComment] = request('POST', '/api/tasks/' . $helpThenNeutral['id'] . '/comments', ['body' => 'Анна, нужна помощь с выбором варианта.'], 2);
+    check($status === 201, 'help-then-neutral request comment created');
+    request('POST', '/api/tasks/' . $helpThenNeutral['id'] . '/comments', ['body' => 'Пока жду ответа, работаю над другим пунктом.'], 3);
+    request('POST', '/api/tasks/' . $negated['id'] . '/comments', ['body' => 'Не нужна помощь, разобрались сами.'], 2);
+    request('POST', '/api/tasks/' . $ownHelp['id'] . '/comments', ['body' => 'Нужна помощь.'], 1);
+    request('POST', '/api/tasks/' . $three['id'] . '/comments', ['body' => 'Нужна помощь, выберите вариант.'], 2);
+    $oldStmt = $testDb->prepare('INSERT INTO comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)');
+    $oldStmt->execute([$oldHelp['id'], 2, 'Нужна помощь', gmdate('Y-m-d\TH:i:s\Z', $now - 8 * 86400)]);
+
+    [$status, $response] = request('GET', '/api/attention');
+    check($status === 200, 'attention returns 200');
+    $attention = array_column($response['data'], null, 'id');
+    check(isset($attention[$help['id']]) && in_array('help_request', $attention[$help['id']]['reasons'], true), 'explicit help is a reason');
+    check(isset($attention[$help['id']]['help_quote']) && str_contains($attention[$help['id']]['help_quote']['excerpt'], 'помощ'), 'help quote contains the request');
+    check(!isset($attention[$negated['id']]), 'negated help is not a reason');
+    check(isset($attention[$helpThenNeutral['id']]) && $attention[$helpThenNeutral['id']]['help_quote']['comment_id'] === $helpThenNeutralComment['data']['id'], 'newer neutral comment does not replace the help request');
+    check(!isset($attention[$ownHelp['id']]), 'own help request is not a reason');
+    check(!isset($attention[$oldHelp['id']]), 'help older than seven days is not a reason');
+    check(!isset($attention[$done['id']]), 'done task is not in attention');
+    check(!isset($attention[10]), 'archived task is not in attention');
+    check(!isset($attention[11]), 'foreign task is not in attention');
+    check($response['data'][0]['id'] === $three['id'], 'task with three reasons is first');
+    $order = array_flip(array_column($response['data'], 'id'));
+    check($order[$tieSoon['id']] < $order[$tieLate['id']], 'earlier due date wins the tie');
+    check(in_array('blocked', $attention[$blocked['id']]['reasons'], true), 'blocked task is in attention');
+    check(in_array('overdue', $attention[$overdue['id']]['reasons'], true) && $attention[$overdue['id']]['overdue_days'] >= 1, 'overdue task is in attention');
+
+    [$status, $response] = request('GET', '/api/attention', null, 2);
+    check($status === 200 && $response['data'] === [], 'owner-less user has an empty attention list');
+    [$status, $response] = request('GET', '/api/attention', null, 3);
+    check($status === 200 && array_column($response['data'], 'id') === [11], 'Vera sees the task in her own project');
+
+    $testDb->exec('DELETE FROM project_members WHERE project_id = 3 AND user_id = 1');
+    [$status, $response] = request('GET', '/api/attention');
+    check(!in_array(8, array_column($response['data'], 'id'), true), 'owner without membership does not see project tasks');
+
     check(request('GET', '/api/tasks/9999')[0] === 404, 'missing task returns 404');
     check(request('GET', '/api/unknown')[0] === 404, 'unknown route returns 404');
     echo "PASS: $count API checks\n";

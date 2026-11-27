@@ -49,6 +49,10 @@ final class Application
             ]);
             return;
         }
+        if ($method === 'GET' && $path === '/api/attention') {
+            $this->respond($this->attention());
+            return;
+        }
         if ($method === 'GET' && $path === '/api/projects') {
             $projects = $this->all('SELECT p.*, (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count FROM projects p JOIN project_members m ON m.project_id=p.id WHERE m.user_id=? ORDER BY p.archived,p.id', [$this->userId]);
             foreach ($projects as &$project) {
@@ -110,6 +114,139 @@ final class Application
             return;
         }
         throw new ApiError('Маршрут не найден', 404);
+    }
+
+    private function attention(): array
+    {
+        $now = gmdate('Y-m-d\TH:i:s\Z');
+        $since = gmdate('Y-m-d\TH:i:s\Z', time() - 7 * 86400);
+        $tasks = $this->all(
+            'SELECT t.*, p.name AS project_name, u.name AS assignee_name
+             FROM tasks t
+             JOIN projects p ON p.id = t.project_id
+             LEFT JOIN users u ON u.id = t.assignee_id
+             WHERE p.owner_id = ? AND p.archived = 0 AND t.status <> \'done\'
+               AND EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = ?)
+             ORDER BY t.id',
+            [$this->userId, $this->userId]
+        );
+        if (!$tasks) {
+            return [];
+        }
+        $ids = array_column($tasks, 'id');
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $comments = $this->all(
+            "SELECT c.*, u.name AS author FROM comments c JOIN users u ON u.id = c.user_id
+             WHERE c.task_id IN ($placeholders) AND c.user_id <> ? AND c.created_at >= ?
+             ORDER BY c.created_at DESC, c.id DESC",
+            [...$ids, $this->userId, $since]
+        );
+        $quotes = [];
+        foreach ($comments as $comment) {
+            if (isset($quotes[$comment['task_id']])) {
+                continue;
+            }
+            $match = $this->helpMatch($comment['body']);
+            if ($match === null) {
+                continue;
+            }
+            $quotes[$comment['task_id']] = [
+                'comment_id' => (int) $comment['id'],
+                'author' => $comment['author'],
+                'created_at' => $comment['created_at'],
+                'excerpt' => $this->excerpt($comment['body'], $match[0], $match[1]),
+            ];
+        }
+        $items = [];
+        foreach ($tasks as $task) {
+            $reasons = [];
+            if ($task['status'] === 'blocked') {
+                $reasons[] = 'blocked';
+            }
+            $overdueDays = 0;
+            if ($task['due_at'] !== null && $task['due_at'] < $now) {
+                $reasons[] = 'overdue';
+                $overdueDays = max(0, (int) floor((time() - (int) strtotime($task['due_at'])) / 86400));
+            }
+            $quote = $quotes[$task['id']] ?? null;
+            if ($quote !== null) {
+                $reasons[] = 'help_request';
+            }
+            if (!$reasons) {
+                continue;
+            }
+            $items[] = [
+                'id' => (int) $task['id'],
+                'project_id' => (int) $task['project_id'],
+                'project_name' => $task['project_name'],
+                'title' => $task['title'],
+                'status' => $task['status'],
+                'assignee_id' => $task['assignee_id'] === null ? null : (int) $task['assignee_id'],
+                'assignee_name' => $task['assignee_name'],
+                'due_at' => $task['due_at'],
+                'reasons' => $reasons,
+                'overdue_days' => $overdueDays,
+                'help_quote' => $quote,
+            ];
+        }
+        usort($items, static function (array $a, array $b): int {
+            $byReasons = count($b['reasons']) <=> count($a['reasons']);
+            if ($byReasons !== 0) {
+                return $byReasons;
+            }
+            if ($a['due_at'] === null && $b['due_at'] !== null) {
+                return 1;
+            }
+            if ($a['due_at'] !== null && $b['due_at'] === null) {
+                return -1;
+            }
+            if ($a['due_at'] !== $b['due_at']) {
+                return $a['due_at'] <=> $b['due_at'];
+            }
+            return $a['id'] <=> $b['id'];
+        });
+        return $items;
+    }
+
+    private function helpMatch(string $body): ?array
+    {
+        $pattern = '/(?:нужн\p{L}*\s+(?:ваша\s+)?помощ|прош\p{L}*\s+помощ|помог(?:и|ите)\b|нужн\p{L}*\s+решени|нужен\s+ответ|требует\p{L}*\s+помощ|подскаж(?:и|ите)\b)/iu';
+        if (!preg_match_all($pattern, $body, $matches, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+        foreach ($matches[0] as [$text, $offset]) {
+            if ($this->negated($body, $offset)) {
+                continue;
+            }
+            return [$offset, strlen($text)];
+        }
+        return null;
+    }
+
+    private function negated(string $body, int $offset): bool
+    {
+        $before = substr($body, max(0, $offset - 40), min(40, $offset));
+        return (bool) preg_match('/(?:^|[^\p{L}])не\s+$/iu', $before);
+    }
+
+    private function excerpt(string $body, int $offset, int $length): string
+    {
+        $chars = preg_split('//u', $body, -1, PREG_SPLIT_NO_EMPTY);
+        if ($chars === false) {
+            return substr($body, 0, 220);
+        }
+        $prefix = preg_split('//u', substr($body, 0, $offset), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $match = preg_split('//u', substr($body, $offset, $length), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $start = max(0, count($prefix) - 80);
+        $end = min(count($chars), count($prefix) + count($match) + 120);
+        $text = implode('', array_slice($chars, $start, $end - $start));
+        if ($start > 0) {
+            $text = '…' . $text;
+        }
+        if ($end < count($chars)) {
+            $text .= '…';
+        }
+        return trim($text);
     }
 
     private function validateTask(array $data, int $projectId, bool $partial): array
