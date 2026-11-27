@@ -110,6 +110,7 @@ try {
     check($status === 201 && $response['data']['author'] === 'Борис · разработчик', 'comment records acting user');
     [$status, $response] = request('GET', '/api/tasks/' . $task['id']);
     check($response['data']['status'] === 'done' && count($response['data']['comments']) === 1, 'changes persist across requests');
+    check($response['data']['version'] === 2, 'comment does not change task version');
     check($response['data']['comments'][0]['body'] === '<script>window.pwned=1</script>', 'comment content retained as plain data');
     [$status, $response] = request('GET', '/api/projects/1/tasks');
     check(count($response['data']) === 6, 'initialization does not duplicate or reset data');
@@ -143,6 +144,8 @@ try {
     $three = createTask(1, ['title' => 'Attention three reasons', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $past]);
     $tieSoon = createTask(1, ['title' => 'Attention blocked sooner', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $future]);
     $tieLate = createTask(1, ['title' => 'Attention blocked later', 'status' => 'blocked', 'assignee_id' => 2, 'due_at' => $later]);
+    $longNegated = createTask(1, ['title' => 'Attention long negated', 'status' => 'open', 'assignee_id' => 2, 'due_at' => null]);
+    $unassigned = createTask(1, ['title' => 'Attention unassigned', 'status' => 'blocked', 'assignee_id' => null, 'due_at' => $future]);
 
     [$status, $helpComment] = request('POST', '/api/tasks/' . $help['id'] . '/comments', ['body' => 'Нужна помощь с проверкой документов.'], 2);
     check($status === 201 && $helpComment['data']['author'] === 'Борис · разработчик', 'help comment created');
@@ -150,6 +153,7 @@ try {
     check($status === 201, 'help-then-neutral request comment created');
     request('POST', '/api/tasks/' . $helpThenNeutral['id'] . '/comments', ['body' => 'Пока жду ответа, работаю над другим пунктом.'], 3);
     request('POST', '/api/tasks/' . $negated['id'] . '/comments', ['body' => 'Не нужна помощь, разобрались сами.'], 2);
+    request('POST', '/api/tasks/' . $longNegated['id'] . '/comments', ['body' => 'Спасибо, разобрались, не нужна помощь.'], 2);
     request('POST', '/api/tasks/' . $ownHelp['id'] . '/comments', ['body' => 'Нужна помощь.'], 1);
     request('POST', '/api/tasks/' . $three['id'] . '/comments', ['body' => 'Нужна помощь, выберите вариант.'], 2);
     $oldStmt = $testDb->prepare('INSERT INTO comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)');
@@ -160,7 +164,12 @@ try {
     $attention = array_column($response['data'], null, 'id');
     check(isset($attention[$help['id']]) && in_array('help_request', $attention[$help['id']]['reasons'], true), 'explicit help is a reason');
     check(isset($attention[$help['id']]['help_quote']) && str_contains($attention[$help['id']]['help_quote']['excerpt'], 'помощ'), 'help quote contains the request');
+    check(isset($attention[$help['id']]['help_quote'])
+        && $attention[$help['id']]['help_quote']['author'] === 'Борис · разработчик'
+        && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $attention[$help['id']]['help_quote']['created_at']) === 1,
+        'help quote carries author and UTC time');
     check(!isset($attention[$negated['id']]), 'negated help is not a reason');
+    check(!isset($attention[$longNegated['id']]), 'long negated help is not a reason');
     check(isset($attention[$helpThenNeutral['id']]) && $attention[$helpThenNeutral['id']]['help_quote']['comment_id'] === $helpThenNeutralComment['data']['id'], 'newer neutral comment does not replace the help request');
     check(!isset($attention[$ownHelp['id']]), 'own help request is not a reason');
     check(!isset($attention[$oldHelp['id']]), 'help older than seven days is not a reason');
@@ -171,13 +180,17 @@ try {
     $order = array_flip(array_column($response['data'], 'id'));
     check($order[$tieSoon['id']] < $order[$tieLate['id']], 'earlier due date wins the tie');
     check(in_array('blocked', $attention[$blocked['id']]['reasons'], true), 'blocked task is in attention');
+    check(!in_array('overdue', $attention[$blocked['id']]['reasons'], true), 'future due date is not overdue');
     check(in_array('overdue', $attention[$overdue['id']]['reasons'], true) && $attention[$overdue['id']]['overdue_days'] >= 1, 'overdue task is in attention');
+    check(isset($attention[$unassigned['id']]) && $attention[$unassigned['id']]['assignee_name'] === null, 'unassigned task is in attention');
+    check($response['data'][count($response['data']) - 1]['due_at'] === null, 'tasks without a due date sort last');
 
     [$status, $response] = request('GET', '/api/attention', null, 2);
     check($status === 200 && $response['data'] === [], 'owner-less user has an empty attention list');
     [$status, $response] = request('GET', '/api/attention', null, 3);
     check($status === 200 && array_column($response['data'], 'id') === [11], 'Vera sees the task in her own project');
 
+    $testDb->exec("UPDATE tasks SET status = 'blocked' WHERE id = 8");
     $testDb->exec('DELETE FROM project_members WHERE project_id = 3 AND user_id = 1');
     [$status, $response] = request('GET', '/api/attention');
     check(!in_array(8, array_column($response['data'], 'id'), true), 'owner without membership does not see project tasks');

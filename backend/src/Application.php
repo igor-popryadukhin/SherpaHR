@@ -225,8 +225,7 @@ final class Application
 
     private function negated(string $body, int $offset): bool
     {
-        $before = substr($body, max(0, $offset - 40), min(40, $offset));
-        return (bool) preg_match('/(?:^|[^\p{L}])не\s+$/iu', $before);
+        return (bool) preg_match('/(?:^|[^\p{L}])не\s+$/iu', substr($body, 0, $offset));
     }
 
     private function excerpt(string $body, int $offset, int $length): string
