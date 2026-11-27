@@ -395,6 +395,74 @@ fieldset {
 .muted {
   color:#87939b;
 }
+.attention-link {
+  margin-bottom:10px;
+  border-color:#e4e9ee;
+}
+.attention-link .project-icon {
+  color:#9a4d17;
+}
+.attention-table .project-cell,
+.attention-table .task-cell {
+  white-space:normal;
+}
+.attention-table .project-cell {
+  color:#596671;
+  font-size:11px;
+  vertical-align:top;
+}
+.attention-table .task-cell {
+  min-width:260px;
+}
+.quote {
+  margin:9px 0 0;
+  padding:8px 10px;
+  border-left:3px solid #d0d7de;
+  background:#fafbfc;
+  color:#596671;
+  font-size:11px;
+  line-height:1.6;
+  white-space:normal;
+  overflow-wrap:anywhere;
+}
+.quote small {
+  display:block;
+  margin-top:4px;
+  color:#87939b;
+  font-size:10px;
+}
+.reasons {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+.reason {
+  display:inline-block;
+  font-size:11px;
+  padding:3px 8px;
+  border-radius:5px;
+  background:#eef1f4;
+  color:#596671;
+}
+.reason.blocked {
+  background:#fff0e6;
+  color:#9a4d17;
+}
+.reason.overdue {
+  background:#fff0ee;
+  color:#983c30;
+}
+.reason.help_request {
+  background:#eaf2fc;
+  color:#34679c;
+}
+.drawer-project {
+  display:block;
+  margin-top:4px;
+  font-size:11px;
+  font-weight:400;
+  color:#87939b;
+}
 @media(max-width:1150px) {
   .sidebar {
     width:210px;

@@ -1,8 +1,8 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api } from './api';
-import { Comment, Context, Project, Task, TaskDetail, TaskStatus } from './models';
+import { AttentionItem, AttentionReason, Comment, Context, Project, Task, TaskDetail, TaskStatus } from './models';
 
 @Component({
   selector: 'app-root',
@@ -26,8 +26,18 @@ export class AppComponent {
   comment = '';
   creating = signal(false);
   draft = this.emptyDraft();
+  view = signal<'project' | 'attention'>('project');
+  attention = signal<AttentionItem[]>([]);
+  attentionLoading = signal(false);
+  attentionError = signal('');
+  cardProject = computed<Project | null>(() => {
+    const detail = this.detail();
+    if (detail) return this.projects().find(p => p.id === detail.project_id) ?? null;
+    return this.project();
+  });
   private generation = 0;
   private detailGeneration = 0;
+  private attentionGeneration = 0;
   readonly statuses: { value: TaskStatus; label: string }[] = [
     { value: 'open', label: 'Открыта' }, { value: 'in_progress', label: 'В работе' },
     { value: 'blocked', label: 'Заблокирована' }, { value: 'done', label: 'Готово' },
@@ -37,16 +47,41 @@ export class AppComponent {
 
   async load(): Promise<void> {
     const generation = ++this.generation;
+    const attentionGeneration = ++this.attentionGeneration;
     this.loading.set(true);
     this.error.set('');
+    this.attentionError.set('');
     this.closeDetail();
+    this.attention.set([]);
+    this.attentionLoading.set(this.view() === 'attention');
+    // The overview must not block project navigation: a failed /attention request
+    // stays independent from the project list.
+    const attentionRequest = this.api.request<AttentionItem[]>('/attention')
+      .then(attention => {
+        if (attentionGeneration !== this.attentionGeneration) return;
+        this.attention.set(attention);
+        this.attentionLoading.set(false);
+      })
+      .catch(error => {
+        if (attentionGeneration !== this.attentionGeneration) return;
+        this.attention.set([]);
+        this.attentionLoading.set(false);
+        this.attentionError.set(error instanceof Error ? error.message : 'Не удалось загрузить обзор');
+      });
     try {
       const [context, projects] = await Promise.all([
-        this.api.request<Context>('/context'), this.api.request<Project[]>('/projects'),
+        this.api.request<Context>('/context'),
+        this.api.request<Project[]>('/projects'),
       ]);
       if (generation !== this.generation) return;
       this.context.set(context);
       this.projects.set(projects);
+      if (this.view() === 'attention') {
+        this.project.set(null);
+        this.tasks.set([]);
+        await attentionRequest;
+        return;
+      }
       const project = projects.find(p => p.id === this.project()?.id) ?? projects[0];
       if (project) await this.selectProject(project);
     } catch (error) {
@@ -61,6 +96,7 @@ export class AppComponent {
     this.project.set(null);
     this.projects.set([]);
     this.tasks.set([]);
+    this.attention.set([]);
     this.context.set(null);
     this.notice.set('');
     void this.load();
@@ -71,6 +107,7 @@ export class AppComponent {
     this.loading.set(true);
     this.error.set('');
     this.notice.set('');
+    this.view.set('project');
     this.project.set(project);
     this.tasks.set([]);
     this.status = '';
@@ -83,6 +120,34 @@ export class AppComponent {
       if (generation === this.generation) this.fail(error);
     } finally {
       if (generation === this.generation) this.loading.set(false);
+    }
+  }
+
+  async openAttention(): Promise<void> {
+    this.view.set('attention');
+    this.project.set(null);
+    this.tasks.set([]);
+    this.status = '';
+    this.search = '';
+    this.notice.set('');
+    this.closeDetail();
+    await this.refreshAttention();
+  }
+
+  async refreshAttention(): Promise<void> {
+    const generation = ++this.attentionGeneration;
+    this.attentionLoading.set(true);
+    this.attentionError.set('');
+    try {
+      const attention = await this.api.request<AttentionItem[]>('/attention');
+      if (generation !== this.attentionGeneration) return;
+      this.attention.set(attention);
+    } catch (error) {
+      if (generation !== this.attentionGeneration) return;
+      this.attention.set([]);
+      this.attentionError.set(error instanceof Error ? error.message : 'Не удалось загрузить обзор');
+    } finally {
+      if (generation === this.attentionGeneration) this.attentionLoading.set(false);
     }
   }
 
@@ -125,11 +190,11 @@ export class AppComponent {
   }
 
   async saveTask(): Promise<void> {
-    const project = this.project();
+    const existing = this.detail();
+    const project = existing ? this.cardProject() : this.project();
     if (!project || this.saving()) return;
     const userId = this.api.userId;
     const generation = this.detailGeneration;
-    const existing = this.detail();
     this.saving.set(true);
     this.error.set('');
     try {
@@ -139,9 +204,14 @@ export class AppComponent {
         ...(existing ? { version: existing.version } : {}),
       };
       const task = await this.api.request<Task>(existing ? `/tasks/${existing.id}` : `/projects/${project.id}/tasks`, existing ? 'PATCH' : 'POST', data);
-      if (userId !== this.api.userId || this.project()?.id !== project.id) return;
+      if (userId !== this.api.userId) return;
+      // Refresh the overview for every successful save, independently of the drawer:
+      // closing the card or switching projects must not leave a stale attention list.
+      await this.refreshAttention();
+      if (!existing && this.project()?.id !== project.id) return;
       if (!existing) this.projects.update(list => list.map(p => p.id === project.id ? { ...p, task_count: p.task_count + 1 } : p));
       this.tasks.update(list => existing ? list.map(t => t.id === task.id ? task : t) : [...list, task]);
+      if (existing && this.detail()?.id !== existing.id) return;
       if (generation === this.detailGeneration) {
         // Saving fields must not erase a comment the user has not sent yet.
         this.detail.set({ ...task, comments: existing?.comments ?? [] });
@@ -171,6 +241,24 @@ export class AppComponent {
       this.notice.set('Комментарий добавлен');
     } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
     finally { this.saving.set(false); }
+  }
+
+  reasonLabel(reason: AttentionReason, item: AttentionItem): string {
+    if (reason === 'blocked') return 'Заблокирована';
+    if (reason === 'overdue') {
+      return item.overdue_days > 0
+        ? `Просрочена · ${item.overdue_days} ${this.daysLabel(item.overdue_days)}`
+        : 'Просрочена';
+    }
+    return 'Просьба о помощи';
+  }
+
+  private daysLabel(days: number): string {
+    const mod10 = days % 10;
+    const mod100 = days % 100;
+    if (mod10 === 1 && mod100 !== 11) return 'день';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'дня';
+    return 'дней';
   }
 
   statusLabel(status: string): string { return this.statuses.find(s => s.value === status)?.label ?? status; }
