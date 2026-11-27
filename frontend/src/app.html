@@ -9,9 +9,11 @@
 </header>
 <div class="shell">
   <nav class="sidebar" aria-label="Проекты">
-    <button class="project-link attention-link" [class.selected]="view() === 'attention'" [attr.aria-current]="view() === 'attention' ? 'page' : null" (click)="openAttention()">
-      <span class="project-icon">⚑</span><span>Требует внимания<small>{{attention().length}} задач</small></span>
-    </button>
+    @if (attention().length) {
+      <button class="project-link attention-link" [class.selected]="view() === 'attention'" [attr.aria-current]="view() === 'attention' ? 'page' : null" (click)="openAttention()">
+        <span class="project-icon">⚑</span><span>Требует внимания<small>{{attention().length}} задач</small></span>
+      </button>
+    }
     <div class="nav-heading">Ваши проекты <span>{{projects().length}}</span></div>
     @for (p of projects(); track p.id) {
       <button class="project-link" [class.selected]="view() === 'project' && project()?.id === p.id" [attr.aria-current]="view() === 'project' && project()?.id === p.id ? 'page' : null" (click)="selectProject(p)">
